@@ -70,6 +70,7 @@ int lsh_help(char **args)
 int lsh_exit (char **args)
 {
     return 0;
+    
 }
 
 void lsh_loop(void)
