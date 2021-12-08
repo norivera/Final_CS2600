@@ -40,6 +40,9 @@ enum editorKey
 
 enum editorHighlight {
   HL_NORMAL = 0,
+  HL_COMMENT,
+  HL_KEYWORD1,
+  HL_KEYWORD2,
   HL_STRING,
   HL_NUMBER,
   HL_MATCH
@@ -50,11 +53,12 @@ enum editorHighlight {
 
 /*** data ***/
 
-struct editorSyntax
-{
-    char *filetype;
-    char **filematch;
-    int flags;
+struct editorSyntax {
+  char *filetype;
+  char **filematch;
+  char **keywords;
+  char *singleline_comment_start;
+  int flags;
 };
 
 typedef struct erow
@@ -88,11 +92,19 @@ struct editorConfig E;
 /*** filetypes ***/
 
 char *C_HL_extensions[] = {".c", ".h", ".cpp", NULL};
+char *C_HL_keywords[] = {
+  "switch", "if", "while", "for", "break", "continue", "return", "else",
+  "struct", "union", "typedef", "static", "enum", "class", "case",
+  "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+  "void|", NULL
+};
 
 struct editorSyntax HLDB[] = {
   {
     "c",
     C_HL_extensions,
+    C_HL_keywords,
+    "//",
     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
   },
 };
@@ -273,12 +285,21 @@ void editorUpdateSyntax(erow *row) {
   row->hl = realloc(row->hl, row->rsize);
   memset(row->hl, HL_NORMAL, row->rsize);
   if (E.syntax == NULL) return;
+  char **keywords = E.syntax->keywords;
+  char *scs = E.syntax->singleline_comment_start;
+  int scs_len = scs ? strlen(scs) : 0;
   int prev_sep = 1;
   int in_string = 0;
   int i = 0;
   while (i < row->rsize) {
     char c = row->render[i];
     unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+    if (scs_len && !in_string) {
+      if (!strncmp(&row->render[i], scs, scs_len)) {
+        memset(&row->hl[i], HL_COMMENT, row->rsize - i);
+        break;
+      }
+    }
     if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
       if (in_string) {
         row->hl[i] = HL_STRING;
@@ -309,6 +330,24 @@ void editorUpdateSyntax(erow *row) {
         continue;
       }
     }
+    if (prev_sep) {
+      int j;
+      for (j = 0; keywords[j]; j++) {
+        int klen = strlen(keywords[j]);
+        int kw2 = keywords[j][klen - 1] == '|';
+        if (kw2) klen--;
+        if (!strncmp(&row->render[i], keywords[j], klen) &&
+            is_separator(row->render[i + klen])) {
+          memset(&row->hl[i], kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
+          i += klen;
+          break;
+        }
+      }
+      if (keywords[j] != NULL) {
+        prev_sep = 0;
+        continue;
+      }
+    }
     prev_sep = is_separator(c);
     i++;
   }
@@ -316,12 +355,17 @@ void editorUpdateSyntax(erow *row) {
 
 int editorSyntaxToColor(int hl) {
   switch (hl) {
+    case HL_COMMENT: return 36;
+    case HL_KEYWORD1: return 33;
+    case HL_KEYWORD2: return 32;
     case HL_STRING: return 35;
     case HL_NUMBER: return 31;
     case HL_MATCH: return 34;
     default: return 37;
   }
 }
+
+
 void editorSelectSyntaxHighlight() {
   E.syntax = NULL;
   if (E.filename == NULL) return;
@@ -731,76 +775,67 @@ void editorScroll()
     }
 }
 
-void editorDrawRows(struct abuf *ab)
-{
-    int y;
-    for (y = 0; y < E.screenrows; y++)
-    {
-        int filerow = y + E.rowoff;
-        if (filerow >= E.numrows)
-        {
-            if (E.numrows == 0 && y == E.screenrows / 3)
-            {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                                          "Kilo editor -- version %s", KILO_VERSION);
-                if (welcomelen > E.screencols)
-                    welcomelen = E.screencols;
-                int padding = (E.screencols - welcomelen) / 2;
-                if (padding)
-                {
-                    abAppend(ab, "~", 1);
-                    padding--;
-                }
-                while (padding--)
-                    abAppend(ab, " ", 1);
-                abAppend(ab, welcome, welcomelen);
-            }
-            else
-            {
-                abAppend(ab, "~", 1);
-            }
+void editorDrawRows(struct abuf *ab) {
+  int y;
+  for (y = 0; y < E.screenrows; y++) {
+    int filerow = y + E.rowoff;
+    if (filerow >= E.numrows) {
+      if (E.numrows == 0 && y == E.screenrows / 3) {
+        char welcome[80];
+        int welcomelen = snprintf(welcome, sizeof(welcome),
+          "Kilo editor -- version %s", KILO_VERSION);
+        if (welcomelen > E.screencols) welcomelen = E.screencols;
+        int padding = (E.screencols - welcomelen) / 2;
+        if (padding) {
+          abAppend(ab, "~", 1);
+          padding--;
         }
-        else
-        {
-            int len = E.row[filerow].rsize - E.coloff;
-            if (len < 0)
-                len = 0;
-            if (len > E.screencols)
-                len = E.screencols;
-            char *c = &E.row[filerow].render[E.coloff];
-            unsigned char *hl = &E.row[filerow].hl[E.coloff];
-            int current_color = -1;
-            int j;
-            for (j = 0; j < len; j++)
-            {
-                if (hl[j] == HL_NORMAL)
-                {
-                    if (current_color != -1)
-                    {
-                        abAppend(ab, "\x1b[39m", 5);
-                        current_color = -1;
-                    }
-                    abAppend(ab, &c[j], 1);
-                }
-                else
-                {
-                    int color = editorSyntaxToColor(hl[j]);
-                    if (color != current_color)
-                    {
-                        current_color = color;
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        abAppend(ab, buf, clen);
-                    }
-                    abAppend(ab, &c[j], 1);
-                }
-            }
+        while (padding--) abAppend(ab, " ", 1);
+        abAppend(ab, welcome, welcomelen);
+      } else {
+        abAppend(ab, "~", 1);
+      }
+    } else {
+      int len = E.row[filerow].rsize - E.coloff;
+      if (len < 0) len = 0;
+      if (len > E.screencols) len = E.screencols;
+      char *c = &E.row[filerow].render[E.coloff];
+      unsigned char *hl = &E.row[filerow].hl[E.coloff];
+      int current_color = -1;
+      int j;
+      for (j = 0; j < len; j++) {
+        if (iscntrl(c[j])) {
+          char sym = (c[j] <= 26) ? '@' + c[j] : '?';
+          abAppend(ab, "\x1b[7m", 4);
+          abAppend(ab, &sym, 1);
+          abAppend(ab, "\x1b[m", 3);
+          if (current_color != -1) {
+            char buf[16];
+            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", current_color);
+            abAppend(ab, buf, clen);
+          }
+        } else if (hl[j] == HL_NORMAL) {
+          if (current_color != -1) {
             abAppend(ab, "\x1b[39m", 5);
+            current_color = -1;
+          }
+          abAppend(ab, &c[j], 1);
+        } else {
+          int color = editorSyntaxToColor(hl[j]);
+          if (color != current_color) {
+            current_color = color;
+            char buf[16];
+            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+            abAppend(ab, buf, clen);
+          }
+          abAppend(ab, &c[j], 1);
         }
-        abAppend(ab, "\x1b[K", 3);
-        abAppend(ab, "\r\n", 2);
+      }
+      abAppend(ab, "\x1b[39m", 5);
     }
+    abAppend(ab, "\x1b[K", 3);
+    abAppend(ab, "\r\n", 2);
+  }
 }
 
 void editorDrawStatusBar(struct abuf *ab) {
