@@ -57,6 +57,7 @@ struct editorConfig
     int screencols;
     int numrows;
     erow *row;
+    int dirty;
     char *filename;
     char statusmsg[80];
     time_t statusmsg_time;
@@ -275,11 +276,11 @@ void editorAppendRow(char *s, size_t len)
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
-
     E.row[at].rsize = 0;
     E.row[at].render = NULL;
     editorUpdateRow(&E.row[at]);
     E.numrows++;
+    E.dirty++;
 }
 
 void editorRowInsertChar(erow *row, int at, int c)
@@ -291,6 +292,7 @@ void editorRowInsertChar(erow *row, int at, int c)
     row->size++;
     row->chars[at] = c;
     editorUpdateRow(row);
+    E.dirty++;
 }
 
 /*** editor operations ***/
@@ -330,7 +332,6 @@ void editorOpen(char *filename)
 {
     free(E.filename);
     E.filename = strdup(filename);
-
     FILE *fp = fopen(filename, "r");
     if (!fp)
         die("fopen");
@@ -346,26 +347,33 @@ void editorOpen(char *filename)
     }
     free(line);
     fclose(fp);
+    E.dirty = 0;
 }
 
-void editorSave() {
-  if (E.filename == NULL) return;
-  int len;
-  char *buf = editorRowsToString(&len);
-  int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-  if (fd != -1) {
-    if (ftruncate(fd, len) != -1) {
-      if (write(fd, buf, len) == len) {
-        close(fd);
-        free(buf);
-        editorSetStatusMessage("%d bytes written to disk", len);
+void editorSave()
+{
+    if (E.filename == NULL)
         return;
-      }
+    int len;
+    char *buf = editorRowsToString(&len);
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+    if (fd != -1)
+    {
+        if (ftruncate(fd, len) != -1)
+        {
+            if (write(fd, buf, len) == len)
+            {
+                close(fd);
+                free(buf);
+                E.dirty = 0;
+                editorSetStatusMessage("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
     }
-    close(fd);
-  }
-  free(buf);
-  editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
+    free(buf);
+    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
 /*** append buffer ***/
@@ -471,8 +479,9 @@ void editorDrawStatusBar(struct abuf *ab)
 {
     abAppend(ab, "\x1b[7m", 4);
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
-                       E.filename ? E.filename : "[No Name]", E.numrows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
+                       E.filename ? E.filename : "[No Name]", E.numrows,
+                       E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d",
                         E.cy + 1, E.numrows);
     if (len > E.screencols)
@@ -654,6 +663,7 @@ void initEditor()
     E.coloff = 0;
     E.numrows = 0;
     E.row = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
@@ -662,16 +672,19 @@ void initEditor()
     E.screenrows -= 2;
 }
 
-int main(int argc, char *argv[]) {
-  enableRawMode();
-  initEditor();
-  if (argc >= 2) {
-    editorOpen(argv[1]);
-  }
-  editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
-  while (1) {
-    editorRefreshScreen();
-    editorProcessKeypress();
-  }
-  return 0;
+int main(int argc, char *argv[])
+{
+    enableRawMode();
+    initEditor();
+    if (argc >= 2)
+    {
+        editorOpen(argv[1]);
+    }
+    editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
+    while (1)
+    {
+        editorRefreshScreen();
+        editorProcessKeypress();
+    }
+    return 0;
 }
